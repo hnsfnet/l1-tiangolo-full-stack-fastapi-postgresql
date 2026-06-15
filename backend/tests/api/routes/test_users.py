@@ -519,3 +519,249 @@ def test_delete_user_without_privileges(
     )
     assert r.status_code == 403
     assert r.json()["detail"] == "The user doesn't have enough privileges"
+
+
+def _create_marked_user(
+    db: Session,
+    *,
+    email: str,
+    full_name: str | None = None,
+    is_active: bool = True,
+    is_superuser: bool = False,
+) -> User:
+    user_in = UserCreate(
+        email=email,
+        password=random_lower_string(),
+        full_name=full_name,
+        is_active=is_active,
+        is_superuser=is_superuser,
+    )
+    return crud.create_user(session=db, user_create=user_in)
+
+
+def test_read_users_requires_superuser(
+    client: TestClient, normal_user_token_headers: dict[str, str]
+) -> None:
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=normal_user_token_headers,
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "The user doesn't have enough privileges"
+
+
+def test_read_users_search_matches_email_and_full_name(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    # Matches via the email, the full name, and neither.
+    _create_marked_user(db, email=f"{marker}-email@example.com")
+    _create_marked_user(
+        db, email=f"{random_lower_string()}@example.com", full_name=f"{marker} Person"
+    )
+    _create_marked_user(db, email=f"{random_lower_string()}@example.com")
+
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # ``count`` reflects only the filtered rows, not the whole table.
+    assert body["count"] == 2
+    assert len(body["data"]) == 2
+    for item in body["data"]:
+        haystack = f"{item['email']} {item['full_name'] or ''}".lower()
+        assert marker in haystack
+
+
+def test_read_users_filter_is_active(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    _create_marked_user(db, email=f"{marker}-active1@example.com", is_active=True)
+    _create_marked_user(db, email=f"{marker}-active2@example.com", is_active=True)
+    _create_marked_user(db, email=f"{marker}-inactive@example.com", is_active=False)
+
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker, "is_active": False},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert len(body["data"]) == 1
+    assert body["data"][0]["email"] == f"{marker}-inactive@example.com"
+    assert body["data"][0]["is_active"] is False
+
+
+def test_read_users_filter_is_superuser(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    _create_marked_user(db, email=f"{marker}-admin@example.com", is_superuser=True)
+    _create_marked_user(db, email=f"{marker}-user1@example.com", is_superuser=False)
+    _create_marked_user(db, email=f"{marker}-user2@example.com", is_superuser=False)
+
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker, "is_superuser": True},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert len(body["data"]) == 1
+    assert body["data"][0]["email"] == f"{marker}-admin@example.com"
+    assert body["data"][0]["is_superuser"] is True
+
+
+def test_read_users_sort_by_email(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    # Insert out of order to prove the database does the sorting.
+    for suffix in ("c", "a", "b"):
+        _create_marked_user(db, email=f"{marker}-{suffix}@example.com")
+
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker, "sort": "email", "order": "asc"},
+    )
+    assert r.status_code == 200
+    emails = [item["email"] for item in r.json()["data"]]
+    assert emails == [
+        f"{marker}-a@example.com",
+        f"{marker}-b@example.com",
+        f"{marker}-c@example.com",
+    ]
+
+    r_desc = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker, "sort": "email", "order": "desc"},
+    )
+    assert r_desc.status_code == 200
+    emails_desc = [item["email"] for item in r_desc.json()["data"]]
+    assert emails_desc == list(reversed(emails))
+
+
+def test_read_users_sort_by_created_at(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    first = _create_marked_user(db, email=f"{marker}-1@example.com")
+    second = _create_marked_user(db, email=f"{marker}-2@example.com")
+    third = _create_marked_user(db, email=f"{marker}-3@example.com")
+
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"q": marker, "sort": "created_at", "order": "desc"},
+    )
+    assert r.status_code == 200
+    ids = [item["id"] for item in r.json()["data"]]
+    assert ids == [str(third.id), str(second.id), str(first.id)]
+
+
+def test_read_users_pagination_is_stable(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    total = 5
+    for index in range(total):
+        _create_marked_user(db, email=f"{marker}-{index}@example.com")
+
+    seen_ids: list[str] = []
+    page_size = 2
+    for skip in range(0, total, page_size):
+        r = client.get(
+            f"{settings.API_V1_STR}/users/",
+            headers=superuser_token_headers,
+            params={
+                "q": marker,
+                "sort": "email",
+                "order": "asc",
+                "skip": skip,
+                "limit": page_size,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        # Filtered count stays constant across pages.
+        assert body["count"] == total
+        seen_ids.extend(item["id"] for item in body["data"])
+
+    # No duplicates and no gaps across the paginated requests.
+    assert len(seen_ids) == total
+    assert len(set(seen_ids)) == total
+
+
+def test_read_users_combined_filters_sort_and_pagination(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    marker = random_lower_string()
+    # 3 active matches and 2 that must be excluded by the filters.
+    _create_marked_user(db, email=f"{marker}-b@example.com", is_active=True)
+    _create_marked_user(db, email=f"{marker}-a@example.com", is_active=True)
+    _create_marked_user(db, email=f"{marker}-c@example.com", is_active=True)
+    _create_marked_user(db, email=f"{marker}-inactive@example.com", is_active=False)
+    _create_marked_user(db, email=f"{marker}-admin@example.com", is_superuser=True)
+
+    base_params = {
+        "q": marker,
+        "is_active": True,
+        "is_superuser": False,
+        "sort": "email",
+        "order": "asc",
+    }
+
+    r_page1 = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={**base_params, "skip": 0, "limit": 2},
+    )
+    assert r_page1.status_code == 200
+    page1 = r_page1.json()
+    assert page1["count"] == 3
+    assert [item["email"] for item in page1["data"]] == [
+        f"{marker}-a@example.com",
+        f"{marker}-b@example.com",
+    ]
+
+    r_page2 = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={**base_params, "skip": 2, "limit": 2},
+    )
+    assert r_page2.status_code == 200
+    page2 = r_page2.json()
+    assert page2["count"] == 3
+    assert [item["email"] for item in page2["data"]] == [
+        f"{marker}-c@example.com",
+    ]
+
+
+def test_read_users_invalid_sort_field_is_rejected(
+    client: TestClient, superuser_token_headers: dict[str, str]
+) -> None:
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"sort": "hashed_password"},
+    )
+    assert r.status_code == 422
+
+
+def test_read_users_invalid_limit_is_rejected(
+    client: TestClient, superuser_token_headers: dict[str, str]
+) -> None:
+    r = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+        params={"limit": 0},
+    )
+    assert r.status_code == 422

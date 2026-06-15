@@ -178,8 +178,13 @@ export type PrivateCreateUserData = {
 export type PrivateCreateUserResponse = (UserPublic);
 
 export type UsersReadUsersData = {
+    isActive?: (boolean | null);
+    isSuperuser?: (boolean | null);
     limit?: number;
+    order?: ('asc' | 'desc');
+    q?: (string | null);
     skip?: number;
+    sort?: ('created_at' | 'email');
 };
 
 export type UsersReadUsersResponse = (UsersPublic);

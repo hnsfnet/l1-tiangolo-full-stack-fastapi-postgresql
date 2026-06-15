@@ -1,8 +1,8 @@
 import uuid
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, delete, func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlmodel import col, delete, func, or_, select
 
 from app import crud
 from app.api.deps import (
@@ -34,16 +34,54 @@ router = APIRouter(prefix="/users", tags=["users"])
     dependencies=[Depends(get_current_active_superuser)],
     response_model=UsersPublic,
 )
-def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
+def read_users(
+    session: SessionDep,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    q: Annotated[str | None, Query(max_length=255)] = None,
+    is_active: bool | None = None,
+    is_superuser: bool | None = None,
+    sort: Literal["created_at", "email"] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
+) -> Any:
     """
     Retrieve users.
+
+    Supports server-side searching (``q`` matches email / full name),
+    filtering (``is_active``, ``is_superuser``), sorting (``sort`` + ``order``)
+    and pagination (``skip`` + ``limit``). ``count`` reflects the number of
+    users matching the applied filters, not the whole table.
     """
 
-    count_statement = select(func.count()).select_from(User)
+    filters = []
+    if q and q.strip():
+        search_term = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                col(User.email).ilike(search_term),
+                col(User.full_name).ilike(search_term),
+            )
+        )
+    if is_active is not None:
+        filters.append(col(User.is_active) == is_active)
+    if is_superuser is not None:
+        filters.append(col(User.is_superuser) == is_superuser)
+
+    count_statement = select(func.count()).select_from(User).where(*filters)
     count = session.exec(count_statement).one()
 
+    sort_column = col(User.email) if sort == "email" else col(User.created_at)
+    sort_clause = sort_column.asc() if order == "asc" else sort_column.desc()
+
     statement = (
-        select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)
+        select(User)
+        .where(*filters)
+        # ``id`` is appended as a deterministic tie-breaker so the ordering
+        # (and therefore pagination) stays stable when the primary sort key
+        # has duplicate values (e.g. equal ``created_at``).
+        .order_by(sort_clause, col(User.id).asc())
+        .offset(skip)
+        .limit(limit)
     )
     users = session.exec(statement).all()
 

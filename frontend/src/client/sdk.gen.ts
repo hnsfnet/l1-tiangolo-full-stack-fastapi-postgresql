@@ -242,6 +242,11 @@ export class UsersService {
      * @param data The data for the request.
      * @param data.skip
      * @param data.limit
+     * @param data.q
+     * @param data.isActive
+     * @param data.isSuperuser
+     * @param data.sort
+     * @param data.order
      * @returns UsersPublic Successful Response
      * @throws ApiError
      */
@@ -251,7 +256,12 @@ export class UsersService {
             url: '/api/v1/users/',
             query: {
                 skip: data.skip,
-                limit: data.limit
+                limit: data.limit,
+                q: data.q,
+                is_active: data.isActive,
+                is_superuser: data.isSuperuser,
+                sort: data.sort,
+                order: data.order
             },
             errors: {
                 422: 'Validation Error'
