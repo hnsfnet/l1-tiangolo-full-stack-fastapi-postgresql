@@ -4,8 +4,18 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from sqlmodel import col, func, select
 
+from app import crud
 from app.api.deps import CurrentUser, SessionDep
-from app.models import Item, ItemCreate, ItemPublic, ItemsPublic, ItemUpdate, Message
+from app.models import (
+    AuditAction,
+    AuditTargetType,
+    Item,
+    ItemCreate,
+    ItemPublic,
+    ItemsPublic,
+    ItemUpdate,
+    Message,
+)
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -67,6 +77,14 @@ def create_item(
     """
     item = Item.model_validate(item_in, update={"owner_id": current_user.id})
     session.add(item)
+    crud.create_audit_log(
+        session=session,
+        actor_user_id=current_user.id,
+        action=AuditAction.ITEM_CREATE,
+        target_type=AuditTargetType.ITEM,
+        target_id=str(item.id),
+        summary=f"Created item {item.title}",
+    )
     session.commit()
     session.refresh(item)
     return item
@@ -91,6 +109,14 @@ def update_item(
     update_dict = item_in.model_dump(exclude_unset=True)
     item.sqlmodel_update(update_dict)
     session.add(item)
+    crud.create_audit_log(
+        session=session,
+        actor_user_id=current_user.id,
+        action=AuditAction.ITEM_UPDATE,
+        target_type=AuditTargetType.ITEM,
+        target_id=str(item.id),
+        summary=f"Updated item {item.title}",
+    )
     session.commit()
     session.refresh(item)
     return item
@@ -108,6 +134,15 @@ def delete_item(
         raise HTTPException(status_code=404, detail="Item not found")
     if not current_user.is_superuser and (item.owner_id != current_user.id):
         raise HTTPException(status_code=403, detail="Not enough permissions")
+    item_title = item.title
     session.delete(item)
+    crud.create_audit_log(
+        session=session,
+        actor_user_id=current_user.id,
+        action=AuditAction.ITEM_DELETE,
+        target_type=AuditTargetType.ITEM,
+        target_id=str(id),
+        summary=f"Deleted item {item_title}",
+    )
     session.commit()
     return Message(message="Item deleted successfully")

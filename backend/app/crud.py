@@ -4,7 +4,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.core.security import get_password_hash, verify_password
-from app.models import Item, ItemCreate, User, UserCreate, UserUpdate
+from app.models import AuditLog, Item, ItemCreate, User, UserCreate, UserUpdate
 
 
 def create_user(*, session: Session, user_create: UserCreate) -> User:
@@ -66,3 +66,32 @@ def create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -
     session.commit()
     session.refresh(db_item)
     return db_item
+
+
+def create_audit_log(
+    *,
+    session: Session,
+    actor_user_id: uuid.UUID | None,
+    action: str,
+    target_type: str,
+    target_id: str | None,
+    summary: str,
+) -> AuditLog:
+    """Stage an audit log entry on the given session WITHOUT committing.
+
+    The entry is only added to the session; the caller is responsible for the
+    commit. This is deliberate: by sharing the caller's transaction the audit
+    entry is persisted if and only if the business operation it describes is
+    successfully committed. If the surrounding transaction is rolled back (e.g.
+    a failed write or a rejected request) the audit entry is discarded too, so
+    the audit trail never diverges from the real state.
+    """
+    audit_log = AuditLog(
+        actor_user_id=actor_user_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        summary=summary,
+    )
+    session.add(audit_log)
+    return audit_log

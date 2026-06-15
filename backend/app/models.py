@@ -108,6 +108,65 @@ class ItemsPublic(SQLModel):
     count: int
 
 
+# Audit log action / target vocabulary. Kept as plain string constants so the
+# values are stable, easy to filter on, and trivially serializable.
+class AuditAction:
+    USER_CREATE = "user.create"
+    USER_UPDATE = "user.update"
+    USER_DELETE = "user.delete"
+    USER_ACTIVATE = "user.activate"
+    USER_DEACTIVATE = "user.deactivate"
+    ITEM_CREATE = "item.create"
+    ITEM_UPDATE = "item.update"
+    ITEM_DELETE = "item.delete"
+
+
+class AuditTargetType:
+    USER = "user"
+    ITEM = "item"
+
+
+# Database model for a single audit log entry. Logs are intentionally kept even
+# when the referenced user is deleted, so the foreign key uses SET NULL rather
+# than a cascade delete.
+class AuditLog(SQLModel, table=True):
+    __tablename__ = "audit_log"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    actor_user_id: uuid.UUID | None = Field(
+        default=None,
+        foreign_key="user.id",
+        nullable=True,
+        ondelete="SET NULL",
+        index=True,
+    )
+    action: str = Field(max_length=100, index=True)
+    target_type: str = Field(max_length=50, index=True)
+    target_id: str | None = Field(default=None, max_length=255, index=True)
+    summary: str = Field(max_length=255)
+    created_at: datetime = Field(
+        default_factory=get_datetime_utc,
+        sa_type=DateTime(timezone=True),  # type: ignore
+        index=True,
+    )
+
+
+# Properties to return via API
+class AuditLogPublic(SQLModel):
+    id: uuid.UUID
+    actor_user_id: uuid.UUID | None = None
+    action: str
+    target_type: str
+    target_id: str | None = None
+    summary: str
+    created_at: datetime
+
+
+class AuditLogsPublic(SQLModel):
+    data: list[AuditLogPublic]
+    count: int
+
+
 # Generic message
 class Message(SQLModel):
     message: str
