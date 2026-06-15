@@ -31,6 +31,21 @@ export type ItemsPublic = {
     count: number;
 };
 
+export type ItemsDelete = {
+    ids: Array<string>;
+};
+
+export type ItemDeleteSkip = {
+    id: string;
+    reason: string;
+};
+
+export type ItemsDeleteResponse = {
+    requested_count: number;
+    deleted_count: number;
+    skipped?: Array<ItemDeleteSkip>;
+};
+
 export type ItemUpdate = {
     title?: (string | null);
     description?: (string | null);
@@ -114,7 +129,11 @@ export type ValidationError = {
 };
 
 export type ItemsReadItemsData = {
+    createdFrom?: (string | null);
+    createdTo?: (string | null);
     limit?: number;
+    ownerId?: (string | null);
+    q?: (string | null);
     skip?: number;
 };
 
@@ -144,6 +163,12 @@ export type ItemsDeleteItemData = {
 };
 
 export type ItemsDeleteItemResponse = (Message);
+
+export type ItemsDeleteItemsData = {
+    requestBody: ItemsDelete;
+};
+
+export type ItemsDeleteItemsResponse = (ItemsDeleteResponse);
 
 export type LoginLoginAccessTokenData = {
     formData: Body_login_login_access_token;

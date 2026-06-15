@@ -3,6 +3,8 @@ import {
   flexRender,
   getCoreRowModel,
   getPaginationRowModel,
+  type OnChangeFn,
+  type RowSelectionState,
   useReactTable,
 } from "@tanstack/react-table"
 import {
@@ -11,6 +13,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react"
+import type { ReactNode } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -32,21 +35,40 @@ import {
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[]
   data: TData[]
+  /** Optional content rendered above the table (filters, bulk actions, ...). */
+  toolbar?: ReactNode
+  /** Enable per-row selection checkboxes. */
+  enableRowSelection?: boolean
+  /** Stable row id, required for selection to survive refetches. */
+  getRowId?: (row: TData) => string
+  /** Controlled selection state. */
+  rowSelection?: RowSelectionState
+  onRowSelectionChange?: OnChangeFn<RowSelectionState>
 }
 
 export function DataTable<TData, TValue>({
   columns,
   data,
+  toolbar,
+  enableRowSelection = false,
+  getRowId,
+  rowSelection,
+  onRowSelectionChange,
 }: DataTableProps<TData, TValue>) {
   const table = useReactTable({
     data,
     columns,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
+    enableRowSelection,
+    ...(getRowId ? { getRowId } : {}),
+    ...(onRowSelectionChange ? { onRowSelectionChange } : {}),
+    ...(rowSelection ? { state: { rowSelection } } : {}),
   })
 
   return (
     <div className="flex flex-col gap-4">
+      {toolbar}
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (

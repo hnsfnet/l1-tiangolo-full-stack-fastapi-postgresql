@@ -108,6 +108,24 @@ class ItemsPublic(SQLModel):
     count: int
 
 
+# Properties to receive for bulk deletion
+class ItemsDelete(SQLModel):
+    ids: list[uuid.UUID] = Field(min_length=1)
+
+
+# Description of a single item that was skipped during bulk deletion
+class ItemDeleteSkip(SQLModel):
+    id: uuid.UUID
+    reason: str
+
+
+# Result returned after a bulk deletion request
+class ItemsDeleteResponse(SQLModel):
+    requested_count: int
+    deleted_count: int
+    skipped: list[ItemDeleteSkip] = []
+
+
 # Generic message
 class Message(SQLModel):
     message: str
