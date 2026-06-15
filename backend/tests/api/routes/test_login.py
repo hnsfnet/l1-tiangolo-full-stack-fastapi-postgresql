@@ -5,7 +5,7 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlmodel import Session
 
 from app.core.config import settings
-from app.core.security import get_password_hash, verify_password
+from app.core.security import INACTIVE_USER_DETAIL, get_password_hash, verify_password
 from app.crud import create_user
 from app.models import User, UserCreate
 from app.utils import generate_password_reset_token
@@ -32,6 +32,43 @@ def test_get_access_token_incorrect_password(client: TestClient) -> None:
     }
     r = client.post(f"{settings.API_V1_STR}/login/access-token", data=login_data)
     assert r.status_code == 400
+
+
+def test_inactive_user_error_is_consistent(client: TestClient, db: Session) -> None:
+    """An inactive user gets the same error on login and on protected routes."""
+    email = random_email()
+    password = random_lower_string()
+    user = create_user(
+        session=db,
+        user_create=UserCreate(email=email, password=password, is_active=True),
+    )
+    # Obtain a valid token while the account is still active.
+    headers = user_authentication_headers(
+        client=client, email=email, password=password
+    )
+
+    # Now deactivate the account.
+    user.is_active = False
+    db.add(user)
+    db.commit()
+
+    # Login with correct credentials must be refused with the inactive message
+    # (not a misleading "incorrect password").
+    r_login = client.post(
+        f"{settings.API_V1_STR}/login/access-token",
+        data={"username": email, "password": password},
+    )
+    assert r_login.status_code == 400
+    assert r_login.json()["detail"] == INACTIVE_USER_DETAIL
+
+    # A protected endpoint reached with the previously issued token must use the
+    # exact same status code and message.
+    r_protected = client.post(
+        f"{settings.API_V1_STR}/login/test-token",
+        headers=headers,
+    )
+    assert r_protected.status_code == 400
+    assert r_protected.json()["detail"] == INACTIVE_USER_DETAIL
 
 
 def test_use_access_token(

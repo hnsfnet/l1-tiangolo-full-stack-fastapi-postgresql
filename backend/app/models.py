@@ -67,6 +67,30 @@ class UsersPublic(SQLModel):
     count: int
 
 
+# Properties to receive when changing the active status of one or more users
+class UserActiveStatusUpdate(SQLModel):
+    user_ids: list[uuid.UUID] = Field(min_length=1)
+    is_active: bool
+
+
+# Details about a single user that could not be (de)activated
+class UserActiveStatusFailure(SQLModel):
+    user_id: uuid.UUID
+    email: str | None = None
+    reason: str
+
+
+# Result of an activate/deactivate operation, with explicit per-user feedback
+class UserActiveStatusResult(SQLModel):
+    is_active: bool
+    requested_count: int
+    success_count: int
+    failure_count: int
+    succeeded: list[UserPublic]
+    failed: list[UserActiveStatusFailure]
+    message: str
+
+
 # Shared properties
 class ItemBase(SQLModel):
     title: str = Field(min_length=1, max_length=255)

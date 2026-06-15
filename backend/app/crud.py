@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, func, select
 
 from app.core.security import get_password_hash, verify_password
 from app.models import Item, ItemCreate, User, UserCreate, UserUpdate
@@ -35,6 +35,16 @@ def get_user_by_email(*, session: Session, email: str) -> User | None:
     statement = select(User).where(User.email == email)
     session_user = session.exec(statement).first()
     return session_user
+
+
+def count_active_superusers(*, session: Session) -> int:
+    """Return the number of users that are both active and superusers."""
+    statement = (
+        select(func.count())
+        .select_from(User)
+        .where(col(User.is_superuser).is_(True), col(User.is_active).is_(True))
+    )
+    return session.exec(statement).one()
 
 
 # Dummy hash to use for timing attack prevention when user is not found

@@ -33,7 +33,7 @@ def login_access_token(
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     elif not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise HTTPException(status_code=400, detail=security.INACTIVE_USER_DETAIL)
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     return Token(
         access_token=security.create_access_token(
@@ -87,7 +87,7 @@ def reset_password(session: SessionDep, body: NewPassword) -> Message:
         # Don't reveal that the user doesn't exist - use same error as invalid token
         raise HTTPException(status_code=400, detail="Invalid token")
     elif not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise HTTPException(status_code=400, detail=security.INACTIVE_USER_DETAIL)
     user_in_update = UserUpdate(password=body.new_password)
     crud.update_user(
         session=session,

@@ -2,13 +2,17 @@ import uuid
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app import crud
+from app.api.routes.users import (
+    CANNOT_DEACTIVATE_LAST_SUPERUSER_DETAIL,
+    CANNOT_DEACTIVATE_SELF_DETAIL,
+)
 from app.core.config import settings
 from app.core.security import verify_password
 from app.models import User, UserCreate
-from tests.utils.user import create_random_user
+from tests.utils.user import create_random_user, user_authentication_headers
 from tests.utils.utils import random_email, random_lower_string
 
 
@@ -519,3 +523,170 @@ def test_delete_user_without_privileges(
     )
     assert r.status_code == 403
     assert r.json()["detail"] == "The user doesn't have enough privileges"
+
+
+def test_set_active_status_requires_superuser(
+    client: TestClient, normal_user_token_headers: dict[str, str], db: Session
+) -> None:
+    user = create_random_user(db)
+    r = client.post(
+        f"{settings.API_V1_STR}/users/set-active-status",
+        headers=normal_user_token_headers,
+        json={"user_ids": [str(user.id)], "is_active": False},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "The user doesn't have enough privileges"
+
+
+def test_deactivate_and_activate_user_succeeds(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    user = create_random_user(db)
+    assert user.is_active is True
+
+    # Deactivate the user.
+    r = client.post(
+        f"{settings.API_V1_STR}/users/set-active-status",
+        headers=superuser_token_headers,
+        json={"user_ids": [str(user.id)], "is_active": False},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_active"] is False
+    assert data["requested_count"] == 1
+    assert data["success_count"] == 1
+    assert data["failure_count"] == 0
+    assert data["succeeded"][0]["id"] == str(user.id)
+    assert data["succeeded"][0]["is_active"] is False
+    db.refresh(user)
+    assert user.is_active is False
+
+    # Reactivate the user.
+    r = client.post(
+        f"{settings.API_V1_STR}/users/set-active-status",
+        headers=superuser_token_headers,
+        json={"user_ids": [str(user.id)], "is_active": True},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_active"] is True
+    assert data["success_count"] == 1
+    assert data["failure_count"] == 0
+    assert data["succeeded"][0]["is_active"] is True
+    db.refresh(user)
+    assert user.is_active is True
+
+
+def test_deactivate_self_as_superuser_is_rejected(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    # Ensure more than one active superuser exists so the *self* guard (not the
+    # last-superuser guard) is the reason the request is rejected.
+    crud.create_user(
+        session=db,
+        user_create=UserCreate(
+            email=random_email(),
+            password=random_lower_string(),
+            is_superuser=True,
+        ),
+    )
+
+    superuser = crud.get_user_by_email(session=db, email=settings.FIRST_SUPERUSER)
+    assert superuser
+
+    r = client.post(
+        f"{settings.API_V1_STR}/users/set-active-status",
+        headers=superuser_token_headers,
+        json={"user_ids": [str(superuser.id)], "is_active": False},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["success_count"] == 0
+    assert data["failure_count"] == 1
+    assert data["failed"][0]["user_id"] == str(superuser.id)
+    assert data["failed"][0]["reason"] == CANNOT_DEACTIVATE_SELF_DETAIL
+
+    # The acting superuser must remain active.
+    db.refresh(superuser)
+    assert superuser.is_active is True
+
+
+def test_cannot_deactivate_last_active_superuser(
+    client: TestClient, db: Session
+) -> None:
+    # Create a dedicated superuser that will act as the sole active superuser.
+    sole_email = random_email()
+    sole_password = random_lower_string()
+    sole = crud.create_user(
+        session=db,
+        user_create=UserCreate(
+            email=sole_email, password=sole_password, is_superuser=True
+        ),
+    )
+    sole_headers = user_authentication_headers(
+        client=client, email=sole_email, password=sole_password
+    )
+
+    # Temporarily deactivate every other active superuser so `sole` is the only
+    # active administrator in the system.
+    others = db.exec(
+        select(User).where(
+            col(User.is_superuser).is_(True),
+            col(User.is_active).is_(True),
+            User.id != sole.id,
+        )
+    ).all()
+    for other in others:
+        other.is_active = False
+        db.add(other)
+    db.commit()
+
+    try:
+        assert crud.count_active_superusers(session=db) == 1
+
+        r = client.post(
+            f"{settings.API_V1_STR}/users/set-active-status",
+            headers=sole_headers,
+            json={"user_ids": [str(sole.id)], "is_active": False},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["success_count"] == 0
+        assert data["failure_count"] == 1
+        assert data["failed"][0]["reason"] == CANNOT_DEACTIVATE_LAST_SUPERUSER_DETAIL
+
+        # The last active superuser must remain active.
+        db.refresh(sole)
+        assert sole.is_active is True
+    finally:
+        # Restore the other superusers (including FIRST_SUPERUSER) so the rest of
+        # the suite is unaffected.
+        for other in others:
+            db.refresh(other)
+            other.is_active = True
+            db.add(other)
+        db.commit()
+
+
+def test_set_active_status_batch_reports_failures(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    user = create_random_user(db)
+    missing_id = uuid.uuid4()
+
+    r = client.post(
+        f"{settings.API_V1_STR}/users/set-active-status",
+        headers=superuser_token_headers,
+        json={"user_ids": [str(user.id), str(missing_id)], "is_active": False},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["requested_count"] == 2
+    assert data["success_count"] == 1
+    assert data["failure_count"] == 1
+    assert data["succeeded"][0]["id"] == str(user.id)
+    assert data["failed"][0]["user_id"] == str(missing_id)
+    assert data["failed"][0]["reason"] == "User not found"
+
+    db.refresh(user)
+    assert user.is_active is False

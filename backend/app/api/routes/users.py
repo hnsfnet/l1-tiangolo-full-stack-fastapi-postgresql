@@ -17,6 +17,9 @@ from app.models import (
     Message,
     UpdatePassword,
     User,
+    UserActiveStatusFailure,
+    UserActiveStatusResult,
+    UserActiveStatusUpdate,
     UserCreate,
     UserPublic,
     UserRegister,
@@ -27,6 +30,10 @@ from app.models import (
 from app.utils import generate_new_account_email, send_email
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+# Reasons returned when a deactivation request is rejected by a safety guard.
+CANNOT_DEACTIVATE_SELF_DETAIL = "Administrators cannot deactivate their own account"
+CANNOT_DEACTIVATE_LAST_SUPERUSER_DETAIL = "Cannot deactivate the last active superuser"
 
 
 @router.get(
@@ -157,6 +164,111 @@ def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     user_create = UserCreate.model_validate(user_in)
     user = crud.create_user(session=session, user_create=user_create)
     return user
+
+
+@router.post(
+    "/set-active-status",
+    dependencies=[Depends(get_current_active_superuser)],
+    response_model=UserActiveStatusResult,
+)
+def set_users_active_status(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    body: UserActiveStatusUpdate,
+) -> Any:
+    """
+    Activate or deactivate one or more users in a single request.
+
+    This is the explicit, auditable way to manage account status (rather than
+    silently patching the ``is_active`` field). It supports batch operations and
+    returns per-user feedback. When deactivating, two safety guards apply:
+
+    * the last remaining active superuser can never be deactivated, so the
+      system always keeps at least one active administrator; and
+    * an administrator can never deactivate their own account.
+
+    The last-superuser guard is evaluated before the self guard so that a sole
+    administrator attempting to disable themselves gets the more informative
+    "last active superuser" reason.
+    """
+    succeeded: list[User] = []
+    failed: list[UserActiveStatusFailure] = []
+
+    # Track how many active superusers remain so we never remove the last one.
+    active_superuser_count = crud.count_active_superusers(session=session)
+
+    # De-duplicate the requested ids while preserving the original order.
+    seen: set[uuid.UUID] = set()
+    unique_ids: list[uuid.UUID] = []
+    for user_id in body.user_ids:
+        if user_id not in seen:
+            seen.add(user_id)
+            unique_ids.append(user_id)
+
+    for user_id in unique_ids:
+        user = session.get(User, user_id)
+        if user is None:
+            failed.append(
+                UserActiveStatusFailure(
+                    user_id=user_id, email=None, reason="User not found"
+                )
+            )
+            continue
+
+        if body.is_active:
+            # Activating a user is always safe.
+            if not user.is_active:
+                user.is_active = True
+                session.add(user)
+            succeeded.append(user)
+            continue
+
+        # Deactivation path: apply the safety guards in priority order.
+        if user.is_superuser and user.is_active and active_superuser_count <= 1:
+            failed.append(
+                UserActiveStatusFailure(
+                    user_id=user.id,
+                    email=user.email,
+                    reason=CANNOT_DEACTIVATE_LAST_SUPERUSER_DETAIL,
+                )
+            )
+            continue
+        if user.id == current_user.id:
+            failed.append(
+                UserActiveStatusFailure(
+                    user_id=user.id,
+                    email=user.email,
+                    reason=CANNOT_DEACTIVATE_SELF_DETAIL,
+                )
+            )
+            continue
+
+        if user.is_active:
+            user.is_active = False
+            session.add(user)
+            if user.is_superuser:
+                active_superuser_count -= 1
+        succeeded.append(user)
+
+    session.commit()
+    for user in succeeded:
+        session.refresh(user)
+
+    action = "activated" if body.is_active else "deactivated"
+    message = f"{len(succeeded)} user(s) {action} successfully"
+    if failed:
+        message += f", {len(failed)} skipped"
+
+    return UserActiveStatusResult(
+        is_active=body.is_active,
+        requested_count=len(unique_ids),
+        success_count=len(succeeded),
+        failure_count=len(failed),
+        succeeded=[UserPublic.model_validate(user) for user in succeeded],
+        failed=failed,
+        message=message,
+    )
 
 
 @router.get("/{user_id}", response_model=UserPublic)

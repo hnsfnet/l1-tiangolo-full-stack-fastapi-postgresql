@@ -18,6 +18,11 @@ password_hash = PasswordHash(
 
 ALGORITHM = "HS256"
 
+# Single source of truth for the error detail shown when an inactive user tries
+# to authenticate or access a protected resource. Centralised here so the login
+# route and the request dependencies can never drift apart.
+INACTIVE_USER_DETAIL = "Inactive user"
+
 
 def create_access_token(subject: str | Any, expires_delta: timedelta) -> str:
     expire = datetime.now(timezone.utc) + expires_delta

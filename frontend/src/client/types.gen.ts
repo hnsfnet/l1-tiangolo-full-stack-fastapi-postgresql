@@ -62,6 +62,27 @@ export type UpdatePassword = {
     new_password: string;
 };
 
+export type UserActiveStatusFailure = {
+    user_id: string;
+    email?: (string | null);
+    reason: string;
+};
+
+export type UserActiveStatusResult = {
+    is_active: boolean;
+    requested_count: number;
+    success_count: number;
+    failure_count: number;
+    succeeded: Array<UserPublic>;
+    failed: Array<UserActiveStatusFailure>;
+    message: string;
+};
+
+export type UserActiveStatusUpdate = {
+    user_ids: Array<string>;
+    is_active: boolean;
+};
+
 export type UserCreate = {
     email: string;
     is_active?: boolean;
@@ -230,6 +251,12 @@ export type UsersDeleteUserData = {
 };
 
 export type UsersDeleteUserResponse = (Message);
+
+export type UsersSetActiveStatusData = {
+    requestBody: UserActiveStatusUpdate;
+};
+
+export type UsersSetActiveStatusResponse = (UserActiveStatusResult);
 
 export type UtilsTestEmailData = {
     emailTo: string;
